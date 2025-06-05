@@ -4,11 +4,11 @@ from .model import OTP
 from sqlalchemy.future import select
 from datetime import datetime, timedelta
 from ....core.security import get_password_hash, create_access_token
-from ....utils.utils import save_profile_picture_from_url
 import httpx
 from ....core.config import settings
 from fastapi.responses import JSONResponse
 from ..user.model import User
+from ....services.s3_service import save_profile_info
 
 
 async def get_user_by_email(db: AsyncSession, email: str):
@@ -75,35 +75,46 @@ async def get_or_create_user_from_google(user_info: dict, db: AsyncSession) -> U
     user = result.scalars().first()
 
     if not user:
-        # User doesn't exist, create a new user
+        # Create a new user
         user = User(
             email=email,
             name=user_info.get("name"),
             profile_picture=user_info.get("picture"),
             is_verified=True,
             auth_provider="google",
-            hashed_password=get_password_hash(
-                "Hello@123"
-            ),  # or generate a secure password if needed
+            hashed_password=get_password_hash("Hello@123"),  # Random secure password
         )
-        await save_profile_picture_from_url(
-            user_info.get("picture")
-        )  # Save profile picture if needed
+        profile_pic_url = user_info.get("picture")
+        if profile_pic_url:
+            dummy_upload_file = await save_profile_info(profile_pic_url)
+
+        await save_profile_info(dummy_upload_file)  # Optional: store picture
         db.add(user)
         await db.commit()
         await db.refresh(user)
     else:
-        # User exists, update the user's information if changed
-        user.name = user_info.get("name", user.name)  # Update name if provided
-        user.profile_picture = user_info.get(
-            "picture", user.profile_picture
-        )  # Update profile picture if provided
-        user.is_verified = True  # You can also update verification status if needed
-        user.auth_provider = "google"  # Ensure the auth provider is set as 'google'
+        # Update existing user only if needed
+        updated = False
 
-        # Commit changes if any information was updated
-        await db.commit()
-        await db.refresh(user)
+        if user.name != user_info.get("name", user.name):
+            user.name = user_info["name"]
+            updated = True
+
+        if user.profile_picture != user_info.get("picture", user.profile_picture):
+            user.profile_picture = user_info["picture"]
+            updated = True
+
+        if user.auth_provider != "google":
+            user.auth_provider = "google"
+            updated = True
+
+        if not user.is_verified:
+            user.is_verified = True
+            updated = True
+
+        if updated:
+            await db.commit()
+            await db.refresh(user)
 
     return user
 
